@@ -11,8 +11,8 @@ import time
 def autocorrelation(input_seq, m_x, m_y, m_t, L_x=352, L_y=288, L_t=100, device=torch.device('cpu')):
     '''
         input_seq : numpy.ndarray(3d) or torch.Tensor(5d)
-        m_x, m_y, m_z : Scalar
-        L_x, L_y, L_z : Scalar
+        m_x, m_y, m_t : Scalar
+        L_x, L_y, L_t : Scalar
     ''' 
     
     if abs(m_x) >= L_x or abs(m_y) >= L_y or abs(m_t) >= L_t:
@@ -24,7 +24,6 @@ def autocorrelation(input_seq, m_x, m_y, m_t, L_x=352, L_y=288, L_t=100, device=
         pass
     else:
         raise ValueError
-    
     
     inputs = input_seq[:, :, :L_t-abs(m_t),:L_y-abs(m_y),:L_x-abs(m_x)]
     filters = input_seq[:, :, abs(m_t):,abs(m_y):,abs(m_x):]
