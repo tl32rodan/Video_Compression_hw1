@@ -18,7 +18,7 @@ def autocorrelation_motion(predicted_seq, target_seq, m_x, m_y, m_t,
                            L_x=352, L_y=288, L_t=100,
                            device=torch.device('cpu')):
     '''
-        ! Incompatible to autocorrelation(), since this is not "true" autocorrelation calculation !
+        ! Incompatible to autocorrelation(), since this is not a "true" autocorrelation calculation !
         
         predicted_seq, target_seq : torch.Tensor(5d)
             Detail :
@@ -64,9 +64,9 @@ def find_best_fit_block(source_block, target_blocks, unit_size=(4,4), device=tor
     _, min_mse_idx = torch.topk(mse, 1, largest=False)
     
     min_mse_idx = min_mse_idx.cpu().numpy()
-    
+    # view(-1) is row major ; result_idx = (h, w)
     result_idx = ((min_mse_idx//width).item(), (min_mse_idx % width).item())
-    #print(' min_mse_idx = ',  min_mse_idx,'; height = ',height, ' width = ',width)
+    
     return result_idx
 
 
@@ -102,23 +102,19 @@ def motion_compensation_single_reference(source_frame, target_frame,
             
             
             # Determine margins
-            u_margin, d_margin = max(h_base*unit_size[0]-16, 0) , min((h_base+1)*unit_size[0]+15+1, L_y)
-            l_margin, r_margin = max(w_base*unit_size[1]-16, 0) , min((w_base+1)*unit_size[1]+15+1, L_x)
+            u_margin, d_margin = max(h_base*unit_size[0]-16, 0) , min(h_base*unit_size[0]+15, L_y)
+            l_margin, r_margin = max(w_base*unit_size[1]-16, 0) , min(w_base*unit_size[1]+15, L_x)
 
             target_subblocks = target_blocks[u_margin:d_margin,l_margin:r_margin]
             
             # Calculate motion compensation result
             
-            #print(target_subblocks.size())
-            motion_vector = find_best_fit_block(source_block = source_block,
-                                                target_blocks = target_subblocks,
-                                                unit_size = unit_size,
+            motion_vector = find_best_fit_block(source_block=source_block,
+                                                target_blocks=target_subblocks,
+                                                unit_size=unit_size,
                                                 device=device)
-            if motion_vector[0] >= target_subblocks.size()[0] or motion_vector[1] >= target_subblocks.size()[1]:
-                print('motion_vector = ',motion_vector)
-                print('target_subblocks.size() = ', target_subblocks.size())
             
-            predicted_block = target_subblocks[motion_vector[0],motion_vector[1],:,:][0]
+            predicted_block = target_subblocks[motion_vector[0],motion_vector[1]]
                 
             motion_vector = (motion_vector[0]-(h_base*unit_size[0]-u_margin), 
                              motion_vector[1]-(w_base*unit_size[1]-l_margin))
@@ -129,20 +125,20 @@ def motion_compensation_single_reference(source_frame, target_frame,
 
             # Record motion vector
             motion_vector_list.append(motion_vector)
+            
     if return_result:
-        return predicted_block, motion_vector_list
+        return predicted_frame, motion_vector_list
     else:
         return motion_vector_list
 
 
-# +
-def establish_motion_compensation_dict(Y, output_video_name, dict_filename='tmp.json', 
+def establish_motion_compensation_dict(Y, output_video_name, dict_filename='tmp.json',
+                                       unit_size=(4,4), # block size ; (height, width)
                                        device = torch.device('cpu')):
    
     input_seq = torch.Tensor(Y).type(torch.float64).to(device)
 
     L_x, L_y, L_t = 352, 288, 100
-    unit_size=(4,4) # block size ; (height, width)
     search_range = (16,16) # Motion compensation search range : -16~+15
 
     motion_result_dict_by_step = {}
@@ -151,21 +147,23 @@ def establish_motion_compensation_dict(Y, output_video_name, dict_filename='tmp.
         motion_vector_lists = []
         predicted_frames = torch.zeros_like(input_seq[:L_t -i])
         
-        for source_frame_idx in tqdm(range(L_t -i), desc='source frame index', leave=False):
-            source_frame = input_seq[source_frame_idx]
-            target_frame = input_seq[source_frame_idx + i]
+        for idx in tqdm(range(i, L_t), desc='idx', leave=False):
+            
+            # *Poor naming here
+            source_frame = input_seq[idx]
+            target_frame = input_seq[idx - i]
 
             motion_vector_list = motion_compensation_single_reference(source_frame, target_frame, 
                                                                         L_x=L_x, L_y=L_y, 
                                                                         unit_size=unit_size,
                                                                         device=device,
-                                                                        predicted_frame=predicted_frames[source_frame_idx])
+                                                                        predicted_frame=predicted_frames[idx - i])
 
             motion_vector_lists.append(motion_vector_list)
         
         
-        motion_result_dict_by_step[i] = {
-            'Predict_frames':predicted_frames,
+        motion_result_dict_by_step[str(i)] = {
+            'Predict_frames':predicted_frames.cpu().numpy(),
             'Motion_vector_lists':motion_vector_lists
         }
         
@@ -174,32 +172,30 @@ def establish_motion_compensation_dict(Y, output_video_name, dict_filename='tmp.
         tmp_dict = copy.deepcopy(motion_result_dict_by_step)
 
         for key in tmp_dict:
-            tmp_dict[key]['Predict_frames'] = tmp_dict[key]['Predict_frames'].cpu().numpy().astype('int').tolist()
+            tmp_dict[key]['Predict_frames'] = tmp_dict[key]['Predict_frames'].astype('int').tolist()
 
         json.dump(tmp_dict, f)
         f.close()
     
     return motion_result_dict_by_step        
-    
-    
-    
-# -
 
-def run_1_3(yuv_filename, output_video_name, dict_filename='tmp.json', device=torch.device('cpu')):
-    Y, U, V = read_yuv_video(yuv_filename)
-    
-    # ----------------------------------------------------------------
-    # Normalize each frame with its own mean before calculating autocorrelation
-    # ----------------------------------------------------------------
+
+def normalize_seq(Y):
+    Y = np.array(Y)
     _Y = []
     for frame in Y:
         _Y.append(frame-frame.mean())
 
-    Y = np.array(_Y)
-    
-    R_xxx = np.zeros([21,144,176])
+    return np.array(_Y)
 
-    input_seq = torch.Tensor([[Y]]).type(torch.float32).to(device)
+
+# +
+def run_1_3(yuv_filename, output_video_name, dict_filename='tmp.json', unit_size=(4,4), device=torch.device('cpu')):
+    Y, U, V = read_yuv_video(yuv_filename)
+           
+    R_xxx = np.zeros([21,144,176])
+    
+    input_seq = torch.Tensor([[np.array(Y)]]).type(torch.float32).to(device)
     
     # ----------------------------------------------------------------
     # First, do motion compensation if the dict is not established
@@ -209,6 +205,7 @@ def run_1_3(yuv_filename, output_video_name, dict_filename='tmp.json', device=to
         print('Start to establish new dict of motion-compensated frames...')
         motion_result_dict = establish_motion_compensation_dict(Y=Y, 
                                                                 output_video_name=output_video_name, 
+                                                                unit_size=unit_size,
                                                                 dict_filename=dict_filename,
                                                                 device=device)
         print('Finish estiblishment')
@@ -220,14 +217,21 @@ def run_1_3(yuv_filename, output_video_name, dict_filename='tmp.json', device=to
             motion_result_dict = json.load(fp)
             fp.close()
         print('Finish loading')    
+        
+#     print('motion_result_dict.keys() = ',motion_result_dict.keys())
     # ----------------------------------------------------------------
     # Second, calculate autocorrelation with motion compensated frames
+    # Normalize each frame with its own mean before calculating autocorrelation
     # ----------------------------------------------------------------
+    Y = normalize_seq(Y)
+    input_seq = torch.Tensor([[Y]]).type(torch.float32).to(device)
+    
     print('Start calculating autocorrelation...')
     for m_t in tqdm(range(10+1), desc='m_t'):
         
         # Get pre-calculated compensated frames
         predicted_seq = motion_result_dict[str(abs(m_t-10))]['Predict_frames']
+        predicted_seq = normalize_seq(predicted_seq) # Normalize MC video
         predicted_seq = torch.Tensor([[predicted_seq]]).to(device)
         
         m_t_fill = [m_t, 20-m_t]
@@ -256,7 +260,7 @@ def run_1_3(yuv_filename, output_video_name, dict_filename='tmp.json', device=to
                             R_xxx[t,y,x] = result
             
     
-    print('Finish calculating autocorrelation.')
+    print('Finish calculating autocorrelation')
     print('R_xxx[0,0,0]= ', R_xxx[10,72,88])
                                        
     # ----------------------------------------------------------------
@@ -287,24 +291,92 @@ def run_1_3(yuv_filename, output_video_name, dict_filename='tmp.json', device=to
         f.close()
     print('Finish writing ',output_video_name)
 
+# +
+import json
+
+def save_yuv_from_motion_dict(dict_filename = './motion_ckpt/motion_result_dict_Mobile_4x4.json',
+                              m_t_value = 1,
+                              output_video_name = './MOBILE_mt_10.yuv' ):
+
+    with open(dict_filename, 'r') as fp: 
+        motion_result_dict = json.load(fp)
+        fp.close()
+
+    Y = np.array(motion_result_dict[str(m_t_value)]['Predict_frames'])
+
+    with open(output_video_name ,'wb') as f:
+
+        n_frames, height, width  = Y.shape
+
+        _U = (np.ones((width*height//4))*128).reshape(-1).astype(np.uint8)
+        _V = (np.ones((width*height//4))*128).reshape(-1).astype(np.uint8)
+
+        #_Y = R_xxx
+        for frame in Y:
+            f.write(frame.reshape(-1).astype(np.uint8).tobytes())
+            f.write(_U.tobytes())
+            f.write(_V.tobytes())
+        f.close()
+        print('Finish writing ',output_video_name)
+
+
+# -
+
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')  
     
     yuv_filename = '../MOBILE_352x288_10.yuv'
-    output_video_name = './MOBILE_AC_motion.yuv'
-    dict_filename = './motion_ckpt/motion_result_dict_Mobile.json'
+    output_video_name = './MOBILE_AC_motion_4x4.yuv'
+    dict_filename = './motion_ckpt/motion_result_dict_Mobile_4x4.json'
     
     run_1_3(yuv_filename, output_video_name, 
+            unit_size=(4,4),
             dict_filename=dict_filename,
             device=device)
     
     
     yuv_filename = '../AKIYO_352x288_10.yuv'
-    output_video_name = './AKIYO_AC_motion.yuv'
-    dict_filename = './motion_ckpt/motion_result_dict_AKIYO.json'
+    output_video_name = './AKIYO_AC_motion_4x4.yuv'
+    dict_filename = './motion_ckpt/motion_result_dict_AKIYO_4x4.json'
     
     run_1_3(yuv_filename, output_video_name, 
+            unit_size=(4,4),
+            dict_filename=dict_filename,
+            device=device)
+    
+    
+    
+    yuv_filename = '../MOBILE_352x288_10.yuv'
+    output_video_name = './MOBILE_AC_motion_16x16.yuv'
+    dict_filename = './motion_ckpt/motion_result_dict_Mobile_16x16.json'
+    
+    run_1_3(yuv_filename, output_video_name, 
+            unit_size=(16,16),
+            dict_filename=dict_filename,
+            device=device)
+    
+    
+    yuv_filename = '../AKIYO_352x288_10.yuv'
+    output_video_name = './AKIYO_AC_motion_16x16.yuv'
+    dict_filename = './motion_ckpt/motion_result_dict_AKIYO_16x16.json'
+    
+    run_1_3(yuv_filename, output_video_name, 
+            unit_size=(16,16),
             dict_filename=dict_filename,
             device=device)
 
 
+
+    dict_filename = './motion_ckpt/motion_result_dict_AKIYO_4x4.json'
+    m_t_value = 1
+    output_video_name = './AKIYO_mt_1_4x4.yuv'
+
+    save_yuv_from_motion_dict(dict_filename, m_t_value, output_video_name)
+
+
+
+    dict_filename = './motion_ckpt/motion_result_dict_AKIYO_16x16.json'
+    m_t_value = 10
+    output_video_name = './AKIYO_mt_10_16x16.yuv'
+
+    save_yuv_from_motion_dict(dict_filename, m_t_value, output_video_name)

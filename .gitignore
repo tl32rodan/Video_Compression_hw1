@@ -130,3 +130,5 @@ dmypy.json
 
 .ipynb_checkpoints/**
 problem_1/motion_ckpt/**
+*.yuv
+*.json

@@ -125,4 +125,26 @@ if __name__=='__main__':
     
     run_1_2(yuv_filename, output_video_name)
 
+x = torch.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+
+
+def compute_paired_dist(A, B):
+        bs_A = A.size(0)
+        bs_T = B.size(0)
+        feat_len = A.size(1)
+
+        A_expand = A.unsqueeze(1).expand(bs_A, bs_T, feat_len)
+        B_expand = B.unsqueeze(0).expand(bs_A, bs_T, feat_len)
+        dist = (((A_expand - B_expand))**2).sum(2)
+        return dist
+
+
+compute_paired_dist(x,x)
+
+x.unsqueeze(1).expand(3, 3, 3)
+
+x.unsqueeze(0).expand(3, 3, 3)
+
+((x.unsqueeze(1).expand(3, 3, 3) - x.unsqueeze(0).expand(3, 3, 3))**2).sum(2)
+
 
